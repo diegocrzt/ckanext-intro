@@ -1,3 +1,5 @@
+# -*- encoding: utf-8 -*- 
+
 import logging
 import os
 import csv
@@ -45,6 +47,9 @@ class IntroExamplePlugin(p.SingletonPlugin):
         map.connect('/custom', controller=controller, action='custom_page')
 
         map.connect('/csv', controller=controller, action='datasets_report')
+        
+        # /changes obtiene los cambios recientes
+        map.connect('/changes', controller=controller, action='changes_recently')
 
         return map
 
@@ -56,6 +61,7 @@ class IntroExamplePlugin(p.SingletonPlugin):
         return {
             'group_create': group_create,
             'datasets_report_csv': datasets_report_csv_auth,
+            'changes_recently_csv' : changes_recently_auth,
         }
 
     ## IActions
@@ -63,6 +69,8 @@ class IntroExamplePlugin(p.SingletonPlugin):
         # Return a dict with the action functions that we want to add
         return {
             'datasets_report_csv': datasets_report_csv,
+            'changes_recently_csv' : changes_recently_csv, 
+            # asocia el action con el método 
         }
 
 
@@ -80,6 +88,63 @@ def group_create(context, data_dict):
 def datasets_report_csv_auth(context, data_dict):
 
     return {'success': False, 'msg': 'Only sysadmins can get a report'}
+    
+# Valida que sea el sysadmin
+def changes_recently_auth(context, data_dict):
+    # verifica que se tenga permisos de sysadmin o ser un capybara
+    print(data_dict)
+    return {'success': False, 'msg': 'You are not a Capybara!'}
+
+
+def changes_recently_csv(context, data_dict):
+    '''
+    Genera el tan esperado CSV con las modificaciones recientes
+    
+    A custom action function that generates a CSV file with metadata from
+    all datasets in the CKAN instance and stores it on a temporal file,
+    returning its path.
+
+    Note how we call `p.toolkit.check_access` to make sure that the user is
+    authorized to perform this action.
+    '''
+
+    p.toolkit.check_access('changes_recently_csv', context, data_dict)
+
+    # Get all datasets from the search index (actually the first 100)
+    data_dict = {
+        'q': '*:*',
+        'rows': 100,
+    }
+    #print(data_dict)
+    result = p.toolkit.get_action('recently_changed_packages_activity_list')(context, data_dict)
+
+    # Create a temp file to store the csv
+    fd, tmp_file_path = tempfile.mkstemp(suffix='.csv')
+
+    with open(tmp_file_path, 'w') as f:
+        field_names = ['timestamp', 'name', 'title',
+                       'activity_type']
+        writer = csv.DictWriter(f, fieldnames=field_names,
+                                quoting=csv.QUOTE_ALL)
+        writer.writerow(dict((n, n) for n in field_names))
+        
+        for global_changes in result:
+            row = {}
+            #Should be a dataset
+            if global_changes['data']['package']['type'] != 'dataset' :
+                next
+                
+            # SOME KIND OF DIRTY STUFF
+            if (global_changes['activity_type'] == 'new package') or (global_changes['activity_type'] == 'changed package'):
+                row[field_names[0]] = global_changes[field_names[0]].encode('utf8')
+                row[field_names[1]] = global_changes['data']['package'][field_names[1]].encode('utf8')
+                row[field_names[2]] = global_changes['data']['package'][field_names[2]].encode('utf8')
+                row[field_names[3]] = global_changes[field_names[3]].encode('utf8')
+                writer.writerow(row)
+
+        return {
+            'file': tmp_file_path,
+        }
 
 
 def datasets_report_csv(context, data_dict):
@@ -141,6 +206,30 @@ class CustomController(p.toolkit.BaseController):
             result = p.toolkit.get_action('datasets_report_csv')()
         except p.toolkit.NotAuthorized:
             p.toolkit.abort(401, 'Not authorized to see this report')
+
+        with open(result['file'], 'r') as f:
+            content = f.read()
+
+        # Clean up
+        os.remove(result['file'])
+
+        # Modify the headers of the response to reflect that we are outputing
+        # a CSV file
+        p.toolkit.response.headers['Content-Type'] = 'application/csv'
+        p.toolkit.response.headers['Content-Length'] = len(content)
+        p.toolkit.response.headers['Content-Disposition'] = \
+            'attachment; filename="datasets.csv"'
+
+        return content
+    
+    
+    def changes_recently(self):
+
+        try:
+            # ROCK THE ACTION!
+            result = p.toolkit.get_action('changes_recently_csv')()
+        except p.toolkit.NotAuthorized:
+            p.toolkit.abort(401, 'YOU ARE NOT A CAPYBARA!')
 
         with open(result['file'], 'r') as f:
             content = f.read()
